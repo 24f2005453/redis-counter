@@ -6,9 +6,9 @@ from fastapi import FastAPI, Header, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI(title="Orders API")
 
-# CORS
+# Browser CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,14 +21,14 @@ TOTAL_ORDERS = 55
 RATE_LIMIT = 17
 WINDOW = 10  # seconds
 
-# Fixed catalog of IDs 1..55
+# Fixed catalog
 orders_catalog = [{"id": i} for i in range(1, TOTAL_ORDERS + 1)]
 
-# Idempotency storage
+# Stores created orders by idempotency key
 idempotency_store = {}
 
-# Rate-limit buckets
-client_requests = defaultdict(deque)
+# Per-client request timestamps
+client_buckets = defaultdict(deque)
 
 
 class OrderCreate(BaseModel):
@@ -38,24 +38,24 @@ class OrderCreate(BaseModel):
 
 @app.middleware("http")
 async def rate_limit(request: Request, call_next):
-    # Don't rate limit CORS preflight
+    # Never rate limit browser preflight
     if request.method == "OPTIONS":
         return await call_next(request)
 
     client = request.headers.get("X-Client-Id", "anonymous")
 
     now = time.time()
-    bucket = client_requests[client]
+    bucket = client_buckets[client]
 
     while bucket and bucket[0] <= now - WINDOW:
         bucket.popleft()
 
     if len(bucket) >= RATE_LIMIT:
-        retry_after = max(1, int(WINDOW - (now - bucket[0])) + 1)
+        retry = max(1, int(WINDOW - (now - bucket[0])) + 1)
         return Response(
             status_code=429,
             headers={
-                "Retry-After": str(retry_after)
+                "Retry-After": str(retry)
             }
         )
 
@@ -70,6 +70,7 @@ def create_order(
     response: Response,
     idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
+    # Return existing order for repeated key
     if idempotency_key in idempotency_store:
         response.status_code = status.HTTP_200_OK
         return idempotency_store[idempotency_key]
@@ -110,5 +111,6 @@ def list_orders(limit: int = 10, cursor: str | None = None):
 @app.get("/")
 def root():
     return {
-        "status": "ok"
+        "status": "ok",
+        "service": "Orders API"
     }
